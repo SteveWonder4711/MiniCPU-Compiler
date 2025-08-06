@@ -1,14 +1,16 @@
+start: body
+
 body: statement*
 
 
 statement: assignment ";"
          | ifclause
 
-ifclause: if elif* else?
+ifclause: ifbranch elifbranch* elsebranch?
 
-if: "if" "(" expression ")" "{" body "}"
-elif: "elif" "(" expression ")" "{" body "}"
-else: "else" "{" body "}" 
+ifbranch: "if" "(" expression ")" "{" body "}"
+elifbranch: "elif" "(" expression ")" "{" body "}"
+elsebranch: "else" "{" body "}" 
 
 !assignment: identifier "=" expression
            | identifier "|=" expression
@@ -22,7 +24,7 @@ else: "else" "{" body "}"
            | identifier "/=" expression
            | identifier "%=" expression
 
-expression: number
+?expression: number
           | identifier
           | "(" expression ")"
           | binaryop
