@@ -1,0 +1,60 @@
+body: statement*
+
+
+statement: assignment ";"
+         | ifclause
+
+ifclause: if elif* else?
+
+if: "if" "(" expression ")" "{" body "}"
+elif: "elif" "(" expression ")" "{" body "}"
+else: "else" "{" body "}" 
+
+!assignment: identifier "=" expression
+           | identifier "|=" expression
+           | identifier "^=" expression
+           | identifier "&=" expression
+           | identifier ">>=" expression
+           | identifier "<<=" expression
+           | identifier "+=" expression
+           | identifier "-=" expression
+           | identifier "*=" expression
+           | identifier "/=" expression
+           | identifier "%=" expression
+
+expression: number
+          | identifier
+          | "(" expression ")"
+          | binaryop
+          | unaryop
+
+!binaryop:  expression "<=" expression
+         | expression "<" expression
+         | expression ">=" expression
+         | expression ">" expression
+         | expression "!=" expression
+         | expression "==" expression
+         | expression "|" expression
+         | expression "^" expression
+         | expression "&" expression
+         | expression ">>" expression
+         | expression "<<" expression
+         | expression "+" expression
+         | expression "-" expression
+         | expression "*" expression
+         | expression "/" expression
+         | expression "%" expression         
+
+!unaryop: ("-"|"~") expression
+
+identifier: VALID_IDENTIFER
+VALID_IDENTIFER: /[A-Za-z][A-Za-z0-9_-]*/
+
+number: DECIMAL | HEXADECIMAL | OCTAL | BINARY
+DECIMAL: /[0-9]+/
+HEXADECIMAL: /0[Xx][0-9a-fA-F]+/
+OCTAL: /0[Oo][0-7]+/
+BINARY: /0[Bb][01]+/
+
+%import common.WS
+%ignore WS
