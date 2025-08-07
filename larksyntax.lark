@@ -1,16 +1,30 @@
-start: body
+start: codebody
+
+codebody: (function | statement)*
+
+function: "function" identifier "(" identifier? (", " identifier)* ")" "{" body "}"
+
+returnstatement: "return" expression
 
 body: statement*
 
-
-statement: assignment ";"
+statement: singlestatement ";"
          | ifclause
+         | whilestatement
+         | forstatement
+
+?singlestatement: assignment
+              | returnstatement
 
 ifclause: ifbranch elifbranch* elsebranch?
 
 ifbranch: "if" "(" expression ")" "{" body "}"
 elifbranch: "elif" "(" expression ")" "{" body "}"
 elsebranch: "else" "{" body "}" 
+
+whilestatement: "while" "(" expression ")" "{" body "}"
+
+forstatement: "for" "(" singlestatement ";" expression ";" singlestatement ")" "{" body "}"
 
 !assignment: identifier "=" expression
            | identifier "|=" expression
@@ -30,7 +44,9 @@ elsebranch: "else" "{" body "}"
           | binaryop
           | unaryop
 
-!binaryop:  expression "<=" expression
+!binaryop: expression "||" expression
+         | expression "&&" expression
+         | expression "<=" expression
          | expression "<" expression
          | expression ">=" expression
          | expression ">" expression
@@ -50,7 +66,7 @@ elsebranch: "else" "{" body "}"
 !unaryop: ("-"|"~") expression
 
 identifier: VALID_IDENTIFER
-VALID_IDENTIFER: /[A-Za-z][A-Za-z0-9_-]*/
+VALID_IDENTIFER: /[A-Za-z][A-Za-z0-9_\-]*/
 
 number: DECIMAL | HEXADECIMAL | OCTAL | BINARY
 DECIMAL: /[0-9]+/
@@ -60,3 +76,4 @@ BINARY: /0[Bb][01]+/
 
 %import common.WS
 %ignore WS
+%ignore /\s+/

@@ -19,7 +19,9 @@ operatorcodes = {
     ">": "gt",
     ">=": "ge",
     "<": "lt",
-    "<=": "le"
+    "<=": "le",
+    "&&": "and",
+    "||": "or"
 }
 
 unaryoperatorcodes = {
@@ -31,15 +33,35 @@ unaryoperatorcodes = {
 class ParseState:
     def __init__(self):
         self.ifnum = 0
-        self.symboltable = []
+        self.whilenum = 0
+        self.fornum = 0
+        self.currentfunction = "global"
+        self.functions = {"global": {
+                "arguments": [],
+                "locals": []
+            }
+        }
 
 class ConvertAST(visitors.Transformer_InPlaceRecursive):
+    def codebody(self, tree):
+        statements = tree
+        return CodeBody(statements)
+
     def body(self, tree):
         statements = tree
         return Body(statements)
    
     def statement(self, tree):
         return Statement(tree[0])
+
+    def function(self, tree):
+        name = tree[0].value
+        arguments = []
+        for i in range(1,len(tree)-1):
+            arguments.append(tree[i].value)
+        body = tree[-1]
+        print(arguments)
+        return Function(name, arguments, body)
 
     def ifclause(self, tree):
         ifbranch = None
@@ -68,18 +90,34 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
         body = tree[0]
         return Else(body)
 
+    def whilestatement(self, tree):
+        expression = tree[0]
+        body = tree[1]
+        return While(expression, body)
+
+    def forstatement(self, tree):
+        startstatement = tree[0]
+        condition = tree[1]
+        loopstatement = tree[2]
+        body = tree[3]
+        return For(startstatement, condition, loopstatement, body)
+
     def assignment(self, tree):
         assignvar = tree[0].value
         operator = tree[1].value
         expression = tree[2]
         return Assignment(assignvar, expression, operator)
 
+    def returnstatement(self, tree):
+        expression = tree[0]
+        return Return(expression)
+
     def number(self, tree):
         number = tree[0]
         return Number(number)
 
     def identifier(self, tree):
-        value = tree[0]
+        value = tree[0].value
         return Identifier(value)
 
     def binaryop(self, tree):
@@ -94,7 +132,8 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
         return UnaryOp(right, operator)
 
 
-class Body:
+
+class CodeBody:
     def __init__(self, statements):
         self.statements = statements
 
@@ -104,12 +143,38 @@ class Body:
             out += f"{statement.eval(state)}\n"
         return out
 
+class Body:
+    def __init__(self, statements):
+        self.statements = statements
+
+    def eval(self, state):
+        out = ""
+        for statement in self.statements:
+            out += f"{statement.eval(state)}\n"
+        return out.strip("\n")
+
 class Statement:
     def __init__(self, statement):
         self.statement = statement
 
     def eval(self, state):
         return self.statement.eval(state)
+
+class Function:
+    def __init__(self, name, arguments, body):
+        self.name = name
+        self.arguments = arguments
+        self.body = body
+
+    def eval(self, state):
+        state.currentfunction = self.name
+        state.functions[self.name] = {"arguments": self.arguments, "locals": []}
+        bodyout = self.body.eval(state)
+        localscount = len(state.functions[self.name]["locals"])
+        state.currentfunction = "global"
+        return f"@ {self.name}\nfunction {localscount}\n{bodyout}"
+        
+
 
 class IfClause:
     def __init__(self, ifbranch, elifbranches, elsebranch):
@@ -130,7 +195,7 @@ class IfClause:
             out += f"{branch.body.eval(state)}\ngoto if{ifnum}_end\n@ if{ifnum}_{localnum}\n"
         if self.elsebranch is not None:
             out += f"{self.elsebranch.body.eval(state)}\n"
-        out += f"@ if{ifnum}_end\n"
+        out += f"@ if{ifnum}_end"
         return out
 
 
@@ -149,6 +214,35 @@ class Else:
     def __init__(self, body):
         self.body = body
 
+class While:
+    def __init__(self, expression, body):
+        self.expression = expression
+        self.body = body
+    
+    def eval(self, state):
+        whilenum = state.whilenum
+        state.whilenum += 1
+        expression = self.expression.eval(state)
+        body = self.body.eval(state)
+        return f"@while{whilenum}_loop\n{expression}\nnot\nifgoto while{whilenum}_end\n{body}\ngoto while{whilenum}_loop\n@while{whilenum}_end"
+
+class For:
+    def __init__(self, startstatement, condition, loopstatement, body):
+        self.startstatement = startstatement
+        self.condition = condition
+        self.loopstatement = loopstatement
+        self.body = body
+
+    def eval(self, state):
+        fornum = state.fornum
+        state.fornum += 1
+        startstatement = self.startstatement.eval(state)
+        condition = self.condition.eval(state)
+        loopstatement = self.loopstatement.eval(state)
+        body = self.body.eval(state)
+        return f"{startstatement}\n@ for{fornum}_loop\n{condition}\nnot\nifgoto for{fornum}_end\n{body}\n{loopstatement}\ngoto for{fornum}_loop\n@ for{fornum}_end"
+
+
 
 class Assignment:
     def __init__(self, assignvar, expression, operator):
@@ -157,13 +251,23 @@ class Assignment:
         self.operator = operator
 
     def eval(self, state):
-        if self.assignvar not in state.symboltable:
-            state.symboltable.append(self.assignvar)
-        index = state.symboltable.index(self.assignvar)
+        expression = self.expression.eval(state)
+
+        currentfunction = state.currentfunction
+        if self.assignvar not in state.functions[currentfunction]["locals"]:
+            state.functions[currentfunction]["locals"].append(self.assignvar)
+        index = state.functions[currentfunction]["locals"].index(self.assignvar)
         if self.operator == "=":
-            return f"{self.expression.eval(state)}\npopvar {index}\n"
+            return f"{expression}\npopvar {index}"
         else:
-            return f"pushvar {index}\n{self.expression.eval(state)}\n{operatorcodes[self.operator]}\npopvar {index}\n"
+            return f"pushvar {index}\n{self.expression.eval(state)}\n{operatorcodes[self.operator.replace("=", "")]}\npopvar {index}"
+
+class Return:
+    def __init__(self, expression):
+        self.expression = expression
+
+    def eval(self, state):
+        return f"{self.expression.eval(state)}\nret"
 
 
 class BinaryOp:
@@ -173,7 +277,7 @@ class BinaryOp:
         self.operator = operator
 
     def eval(self, state):
-        return f"{self.left.eval(state)}\n{self.right.eval(state)}\n{operatorcodes[self.operator]}\n"
+        return f"{self.left.eval(state)}\n{self.right.eval(state)}\n{operatorcodes[self.operator]}"
 
 class UnaryOp:
     def __init__(self, right, operator):
@@ -181,7 +285,7 @@ class UnaryOp:
         self.operator = operator
 
     def eval(self, state):
-        return f"{self.right.eval(state)}\n{unaryoperatorcodes[self.operator]}\n"
+        return f"{self.right.eval(state)}\n{unaryoperatorcodes[self.operator]}"
 
 
 class Identifier:
@@ -189,8 +293,13 @@ class Identifier:
         self.value = value
 
     def eval(self, state):
-        if self.value in state.symboltable:
-            return f"pushvar {state.symboltable.index(self.value)}"
+        symboltable = state.functions[state.currentfunction]
+        if self.value in symboltable["locals"]:
+            return f"pushvar {symboltable["locals"].index(self.value)}"
+        elif self.value in symboltable["arguments"]:
+            return f"pusharg {symboltable["arguments"].index(self.value)}"
+        print(state.functions[state.currentfunction])
+
         raise NameError(f"name {self.value} not defined")
 
 
