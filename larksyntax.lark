@@ -2,7 +2,10 @@ start: codebody
 
 codebody: (function | statement)*
 
-function: "function" identifier "(" identifier? (", " identifier)* ")" "{" body "}"
+function: "function" identifier "(" ((identifier ":" vartype) (", " identifier ":" vartype)*)? ")" ("->" vartype)? "{" body "}"
+
+?callnoret: call
+call: identifier "(" (expression (", " expression)*)? ")"
 
 returnstatement: "return" expression
 
@@ -15,6 +18,7 @@ statement: singlestatement ";"
 
 ?singlestatement: assignment
               | returnstatement
+              | callnoret
 
 ifclause: ifbranch elifbranch* elsebranch?
 
@@ -26,23 +30,14 @@ whilestatement: "while" "(" expression ")" "{" body "}"
 
 forstatement: "for" "(" singlestatement ";" expression ";" singlestatement ")" "{" body "}"
 
-!assignment: identifier "=" expression
-           | identifier "|=" expression
-           | identifier "^=" expression
-           | identifier "&=" expression
-           | identifier ">>=" expression
-           | identifier "<<=" expression
-           | identifier "+=" expression
-           | identifier "-=" expression
-           | identifier "*=" expression
-           | identifier "/=" expression
-           | identifier "%=" expression
+!assignment: identifier (":" vartype)? /([\|\^\&\+\-\*\/\%]|>>|<<)?=/ expression
 
 ?expression: number
           | identifier
           | "(" expression ")"
           | binaryop
           | unaryop
+          | call
 
 !binaryop: expression "||" expression
          | expression "&&" expression
@@ -65,8 +60,9 @@ forstatement: "for" "(" singlestatement ";" expression ";" singlestatement ")" "
 
 !unaryop: ("-"|"~") expression
 
-identifier: VALID_IDENTIFER
-VALID_IDENTIFER: /[A-Za-z][A-Za-z0-9_\-]*/
+vartype: VALID_IDENTIFIER
+identifier: VALID_IDENTIFIER
+VALID_IDENTIFIER: /[A-Za-z][A-Za-z0-9_]*/
 
 number: DECIMAL | HEXADECIMAL | OCTAL | BINARY
 DECIMAL: /[0-9]+/

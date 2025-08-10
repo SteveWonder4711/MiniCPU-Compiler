@@ -37,8 +37,8 @@ class ParseState:
         self.fornum = 0
         self.currentfunction = "global"
         self.functions = {"global": {
-                "arguments": [],
-                "locals": []
+                "arguments": {},
+                "locals": {}
             }
         }
 
@@ -55,13 +55,27 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
         return Statement(tree[0])
 
     def function(self, tree):
+        returntype = "void"
+        hastype = type(tree[-2]) == Type
+        name = tree[0].value
+        arguments = {}
+        for i in range(1,len(tree)-1-hastype,2):
+            argname = tree[i].value
+            argtype = tree[i+1].value
+            arguments[argname] = {"type": argtype}
+        body = tree[-1]
+        if hastype: returntype = tree[-2].value
+        return Function(name, arguments, body, returntype)
+
+    def callnoret(self, tree):
+        return CallNoRet(tree[0])
+
+    def call(self, tree):
         name = tree[0].value
         arguments = []
-        for i in range(1,len(tree)-1):
-            arguments.append(tree[i].value)
-        body = tree[-1]
-        print(arguments)
-        return Function(name, arguments, body)
+        for i in range(1,len(tree)):
+            arguments.append(tree[i])
+        return Call(name, arguments)
 
     def ifclause(self, tree):
         ifbranch = None
@@ -104,9 +118,14 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
 
     def assignment(self, tree):
         assignvar = tree[0].value
-        operator = tree[1].value
-        expression = tree[2]
-        return Assignment(assignvar, expression, operator)
+        i = 1
+        vartype = None
+        if type(tree[2]) == Type:
+            vartype = tree[2].value
+            i = 3
+        operator = tree[i].value
+        expression = tree[i+1]
+        return Assignment(assignvar, vartype, expression, operator)
 
     def returnstatement(self, tree):
         expression = tree[0]
@@ -119,6 +138,10 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
     def identifier(self, tree):
         value = tree[0].value
         return Identifier(value)
+
+    def vartype(self, tree):
+        value = tree[0].value
+        return Type(value)
 
     def binaryop(self, tree):
         left = tree[0]
@@ -161,19 +184,39 @@ class Statement:
         return self.statement.eval(state)
 
 class Function:
-    def __init__(self, name, arguments, body):
+    def __init__(self, name, arguments, body, returntype):
         self.name = name
         self.arguments = arguments
         self.body = body
+        self.returntype = returntype
 
     def eval(self, state):
         state.currentfunction = self.name
-        state.functions[self.name] = {"arguments": self.arguments, "locals": []}
+        state.functions[self.name] = {"returntype": self.returntype, "arguments": self.arguments, "locals": {}}
         bodyout = self.body.eval(state)
         localscount = len(state.functions[self.name]["locals"])
         state.currentfunction = "global"
         return f"@ {self.name}\nfunction {localscount}\n{bodyout}"
-        
+
+
+class CallNoRet:
+    def __init__(self, call):
+        self.call = call
+
+    def eval(self, state):
+        return f"{self.call.eval(state)}\npopa"
+
+
+class Call:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+    def eval(self, state):
+        out = ""
+        for expression in self.arguments:
+            out += f"{expression.eval(state)}\n"
+        return out + f"call {self.name} {len(self.arguments)}"
 
 
 class IfClause:
@@ -245,18 +288,21 @@ class For:
 
 
 class Assignment:
-    def __init__(self, assignvar, expression, operator):
+    def __init__(self, assignvar, vartype, expression, operator):
         self.assignvar = assignvar
         self.expression = expression
         self.operator = operator
+        self.vartype = vartype
 
     def eval(self, state):
         expression = self.expression.eval(state)
 
         currentfunction = state.currentfunction
         if self.assignvar not in state.functions[currentfunction]["locals"]:
-            state.functions[currentfunction]["locals"].append(self.assignvar)
-        index = state.functions[currentfunction]["locals"].index(self.assignvar)
+            if self.vartype is None:
+                raise TypeError(f"assignment to {self.assignvar} is missing a type")
+            state.functions[currentfunction]["locals"][self.assignvar] = {"type": self.vartype}
+        index = list(state.functions[currentfunction]["locals"]).index(self.assignvar)
         if self.operator == "=":
             return f"{expression}\npopvar {index}"
         else:
@@ -287,6 +333,9 @@ class UnaryOp:
     def eval(self, state):
         return f"{self.right.eval(state)}\n{unaryoperatorcodes[self.operator]}"
 
+class Type:
+    def __init__(self, value):
+        self.value = value
 
 class Identifier:
     def __init__(self, value):
@@ -295,12 +344,11 @@ class Identifier:
     def eval(self, state):
         symboltable = state.functions[state.currentfunction]
         if self.value in symboltable["locals"]:
-            return f"pushvar {symboltable["locals"].index(self.value)}"
+            return f"pushvar {list(symboltable["locals"]).index(self.value)}"
         elif self.value in symboltable["arguments"]:
-            return f"pusharg {symboltable["arguments"].index(self.value)}"
-        print(state.functions[state.currentfunction])
+            return f"pusharg {list(symboltable["arguments"]).index(self.value)}"
 
-        raise NameError(f"name {self.value} not defined")
+        raise NameError(f"name {self.value} referenced before assignment")
 
 
 class Number:
@@ -322,10 +370,11 @@ p = Lark(syntax, start="start")
 parsestate = ParseState()
 
 parsed = p.parse(code)
-print(parsed.pretty())
 
 ConvertAST().transform(parsed)
 
 converted = parsed.children[0]
 
 print(converted.eval(parsestate))
+
+print(parsestate.functions)

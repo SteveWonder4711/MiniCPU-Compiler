@@ -1,10 +1,14 @@
-function main() {
-  a = 1;
-  b = 2;
-  c = 0;
+function main() -> int{
+  return fib(20);
+}
 
-  if (a > 0 && b > 0) {
-    c = a + b;
+function fib(num: int) -> int{
+  a: int = 1;
+  b: int = 1;
+  for (i: int = 2;i < num;i += 1) {
+    tmp: int = a+b;
+    a = b;
+    b = tmp;
   }
-  return c;
+  return b;
 }
