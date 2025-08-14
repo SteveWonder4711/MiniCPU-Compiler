@@ -2,7 +2,14 @@ start: codebody
 
 codebody: (function | statement)*
 
-function: "function" identifier "(" ((identifier ":" vartype) (", " identifier ":" vartype)*)? ")" ("->" vartype)? "{" body "}"
+function: "function" identifier "(" ((identifier ":" vartype) ("," identifier ":" vartype)*)? ")" ("->" vartype)? "{" body "}"
+
+classdec: "class" identifier "{" classbody "}"
+
+classbody: (classfunction | statement)* -> codebody:
+
+
+classmethod: "method" identifier "(" "self" (("," identifier ":" vartype) ("," identifier ":" vartype)*)? ")" ("->" vartype)? "{" body "}"  
 
 ?callnoret: call
 call: identifier "(" (expression (", " expression)*)? ")"
@@ -38,6 +45,12 @@ forstatement: "for" "(" singlestatement ";" expression ";" singlestatement ")" "
           | binaryop
           | unaryop
           | call
+          | attribute
+          | method
+
+attribute: expression "." identifier
+
+method: expression "." call
 
 !binaryop: expression "||" expression
          | expression "&&" expression

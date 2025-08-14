@@ -4,29 +4,29 @@ from lark import Lark, logger, visitors
 logger.setLevel(logging.WARN)
 
 operatorcodes = {
-    "+": "add",
-    "-": "sub",
-    "*": "call mul 2",
-    "/": "call div 2",
-    "%": "call mod 2",
-    ">>": "call shr 2",
-    "<<": "call shl 2",
-    "&": "and",
-    "^": "call xor 2",
-    "|": "or",
-    "==": "eq",
-    "!=": "ne",
-    ">": "gt",
-    ">=": "ge",
-    "<": "lt",
-    "<=": "le",
-    "&&": "and",
-    "||": "or"
+    "+": ["add", "int"],
+    "-": ["sub", "int"],
+    "*": ["call mul 2", "int"],
+    "/": ["call div 2", "int"],
+    "%": ["call mod 2", "int"],
+    ">>": ["call shr 2", "int"],
+    "<<": ["call shl 2", "int"],
+    "&": ["and", "int"],
+    "^": ["call xor 2", "int"],
+    "|": ["or", "int"],
+    "==": ["eq", "bool"],
+    "!=": ["ne", "bool"],
+    ">": ["gt", "bool"],
+    ">=": ["ge", "bool"],
+    "<": ["lt", "bool"],
+    "<=": ["le", "bool"],
+    "&&": ["and", "bool"],
+    "||": ["or", "bool"]
 }
 
 unaryoperatorcodes = {
-    "-": "neg",
-    "~": "not"
+    "-": ["neg", "int"],
+    "~": ["not", "bool"]
 }
 
 
@@ -41,6 +41,8 @@ class ParseState:
                 "locals": {}
             }
         }
+        self.currentobject = ""
+        self.objects = {}
 
 class ConvertAST(visitors.Transformer_InPlaceRecursive):
     def codebody(self, tree):
@@ -50,7 +52,12 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
     def body(self, tree):
         statements = tree
         return Body(statements)
-   
+    
+    def classdec(self, tree):
+        name = tree[0]
+        body = tree[1]
+        return Class(name, body)
+
     def statement(self, tree):
         return Statement(tree[0])
 
@@ -66,6 +73,11 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
         body = tree[-1]
         if hastype: returntype = tree[-2].value
         return Function(name, arguments, body, returntype)
+
+    def methodcall(self, tree):
+        expression = tree[0]
+        call = tree[1]
+        return Method(expression, call)
 
     def callnoret(self, tree):
         return CallNoRet(tree[0])
@@ -127,6 +139,16 @@ class ConvertAST(visitors.Transformer_InPlaceRecursive):
         expression = tree[i+1]
         return Assignment(assignvar, vartype, expression, operator)
 
+    def attribute(self, tree):
+        expression = tree[0]
+        attributename = tree[1].value
+        return Attribute(expression, attributename)
+
+    def method(self, tree):
+        expression = tree[0]
+        call = tree[1]
+        return Method(expression, call)
+
     def returnstatement(self, tree):
         expression = tree[0]
         return Return(expression)
@@ -176,6 +198,17 @@ class Body:
             out += f"{statement.eval(state)}\n"
         return out.strip("\n")
 
+class Class:
+    def __init__(self, name, body):
+        self.name = name
+        self.body = body
+
+    def eval(self, state):
+        state.currentclass = self.name
+        state.classes[self.name] = {}
+        out = self.body.eval()
+        state.currentclass = ""
+
 class Statement:
     def __init__(self, statement):
         self.statement = statement
@@ -191,12 +224,40 @@ class Function:
         self.returntype = returntype
 
     def eval(self, state):
+        if state.currentclass != "":
+            self.name = state.currentclass + "_" + self.name
         state.currentfunction = self.name
         state.functions[self.name] = {"returntype": self.returntype, "arguments": self.arguments, "locals": {}}
         bodyout = self.body.eval(state)
         localscount = len(state.functions[self.name]["locals"])
         state.currentfunction = "global"
         return f"@ {self.name}\nfunction {localscount}\n{bodyout}"
+
+class Attribute:
+    def __init__(self, expression, name):
+        self.expression = expression
+        self.name = name
+
+    def eval(self, state):
+        objecttype = self.expression.gettype()
+        if objecttype not in state.objects:
+            raise NameError(f"class {objecttype} not defined (somehow)")
+        if self.name not in state.objects[objecttype]["attributes"]:
+            raise NameError(f"class {objecttype} has no attribute {self.name}")
+        return f"{self.expression.eval()}\npushvar {list(state.objects[objecttype]["attributes"]).index(self.name)}\nadd\npushmemory"
+
+
+class Method:
+    def __init__(self, expression, call):
+        self.expression = expression
+        self.name = call.name
+        self.arguments = call.arguments
+
+    def eval(self, state):
+        out = f"{self.expression.eval(state)}\n"
+        for expression in self.arguments:
+            out += f"{expression.eval(state)}\n"
+        return out + f"call {self.expression.gettype(state)}.{self.name} {len(self.arguments)+1}"
 
 
 class CallNoRet:
@@ -285,8 +346,6 @@ class For:
         body = self.body.eval(state)
         return f"{startstatement}\n@ for{fornum}_loop\n{condition}\nnot\nifgoto for{fornum}_end\n{body}\n{loopstatement}\ngoto for{fornum}_loop\n@ for{fornum}_end"
 
-
-
 class Assignment:
     def __init__(self, assignvar, vartype, expression, operator):
         self.assignvar = assignvar
@@ -306,7 +365,7 @@ class Assignment:
         if self.operator == "=":
             return f"{expression}\npopvar {index}"
         else:
-            return f"pushvar {index}\n{self.expression.eval(state)}\n{operatorcodes[self.operator.replace("=", "")]}\npopvar {index}"
+            return f"pushvar {index}\n{self.expression.eval(state)}\n{operatorcodes[self.operator.replace("=", "")][0]}\npopvar {index}"
 
 class Return:
     def __init__(self, expression):
@@ -315,6 +374,8 @@ class Return:
     def eval(self, state):
         return f"{self.expression.eval(state)}\nret"
 
+    def gettype(self, state):
+        return self.expression.gettype(state)
 
 class BinaryOp:
     def __init__(self, left, right, operator):
@@ -323,7 +384,10 @@ class BinaryOp:
         self.operator = operator
 
     def eval(self, state):
-        return f"{self.left.eval(state)}\n{self.right.eval(state)}\n{operatorcodes[self.operator]}"
+        return f"{self.left.eval(state)}\n{self.right.eval(state)}\n{operatorcodes[self.operator][0]}"
+
+    def gettype(self, state):
+        return operatorcodes[self.operator][1]
 
 class UnaryOp:
     def __init__(self, right, operator):
@@ -331,7 +395,11 @@ class UnaryOp:
         self.operator = operator
 
     def eval(self, state):
-        return f"{self.right.eval(state)}\n{unaryoperatorcodes[self.operator]}"
+        return f"{self.right.eval(state)}\n{unaryoperatorcodes[self.operator][0]}"
+
+    def gettype(self, state):
+        return unaryoperatorcodes[self.operator][1]
+
 
 class Type:
     def __init__(self, value):
@@ -350,6 +418,13 @@ class Identifier:
 
         raise NameError(f"name {self.value} referenced before assignment")
 
+    def gettype(self, state):
+        symboltable = state.functions[state.currentfunction]
+        if self.value in symboltable["locals"]:
+            return symboltable["locals"][self.value]["type"]
+        elif self.value in symboltable["arguments"]:
+            return symboltable["arguments"][self.value]["type"]
+        return "void"
 
 class Number:
     def __init__(self, value):
@@ -358,12 +433,16 @@ class Number:
     def eval(self, state):
         return f"pushvalue {self.value}"
 
+    def gettype(self, state):
+        return "int"
+
 
 with open("larksyntax.lark") as syntaxfile:
     syntax = syntaxfile.read()
 
 with open("code") as codefile:
     code = codefile.read()
+
 
 p = Lark(syntax, start="start")
 
