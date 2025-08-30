@@ -66,6 +66,7 @@ enum ParseEbnfErrorType {
     UnclosedParen,
     UnexpectedCharacter(char),
     EmptyRule,
+    UnclosedRule,
 }
 
 impl fmt::Display for ParseEbnfError {
@@ -90,7 +91,16 @@ impl fmt::Display for ParseEbnfError {
                 write!(f, "Empty rule in line {line}, column {column}!")
             }
             ParseEbnfErrorType::UnclosedParen => {
-                write!(f, "Unclosed Parentheses, expected ')' at ")
+                write!(
+                    f,
+                    "Unclosed Parentheses, expected ')' at line {line}, column {column}"
+                )
+            }
+            ParseEbnfErrorType::UnclosedRule => {
+                write!(
+                    f,
+                    "Unclosed Rule, expected ';' at line {line}, column {column}"
+                )
             }
         }
     }
@@ -108,14 +118,18 @@ impl<'a> fmt::Display for EbnfStatement<'a> {
             EbnfStatement::StringTerminal { string } => write!(f, "\"{string}\""),
             EbnfStatement::RegexTerminal { string } => write!(f, "/{string}/"),
             EbnfStatement::DefinedRule { rulename } => write!(f, "{rulename}"),
-            EbnfStatement::Concatenation { rules } => write!(
-                f,
-                "Concatenation: ({})",
-                rules.into_iter().fold(String::new(), |string, rule| string
-                    + " "
-                    + &(*rule.to_string()))
-            ),
-            EbnfStatement::Optional { rule } => write!(f, "Optional: {}", rule),
+            EbnfStatement::Concatenation { rules } => {
+                write!(
+                    f,
+                    "({})",
+                    rules
+                        .iter()
+                        .map(|rule| (*rule).to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+            EbnfStatement::Optional { rule } => write!(f, "{}?", rule),
             /*EbnfStatement::Repetition {
                 rule,
                 minamount,
@@ -297,6 +311,8 @@ impl<'a> EbnfStatement<'a> {
                     left: left,
                     right: right,
                 });
+            } else if char == ';' {
+                break;
             }
 
             if char == '\n' {
@@ -359,12 +375,25 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
         let mut parsedstatements: Vec<EbnfRule<'a>> = Vec::new();
         let mut i = 0;
 
+        let mut parsedrules: Vec<EbnfStatement> = Vec::new();
+        let mut stringparse = false;
+        let mut escaped = false;
+        let mut bracketparse = false;
+        let mut bracketlevel = 0;
+        let mut regexparse = false;
+        let mut out: Option<EbnfStatement> = None;
+        let mut outfound = false;
+
         for char in s.chars() {
+            //println!("{currentcolumn}, {char}");
             if parsename {
                 if char == ':' {
                     rulename = &s[matchstart..i];
                     parsename = false;
                     parsebody = true;
+                    parsedrules = Vec::new();
+                    out = None;
+                    outfound = false;
                     matchstart = i + 1;
                 } else if !char.is_alphanumeric() {
                     return Err(ParseEbnfError {
@@ -375,165 +404,155 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
                 }
                 currentcolumn += 1;
             } else if parsebody {
-                let parserule = {
-                    let mut parsedrules: Vec<EbnfStatement> = Vec::new();
-                    let mut stringparse = false;
-                    let mut escaped = false;
-                    let mut bracketparse = false;
-                    let mut bracketlevel = 0;
-                    let mut regexparse = false;
-                    let mut out: Option<EbnfStatement> = None;
-                    let mut outfound = false;
-                    let parsestart = matchstart;
-
-                    for (x, char) in s[matchstart..].chars().enumerate() {
-                        let i = x + parsestart;
-                        //parsing strings
-                        if escaped {
-                            escaped = false;
-                        } else if stringparse {
-                            if char == '"' {
-                                stringparse = false;
-                                parsedrules.push(EbnfStatement::StringTerminal {
-                                    string: &s[matchstart + 1..i],
-                                });
-                                matchstart = i + 1;
-                            } else if char == '\n' {
-                                return Err(ParseEbnfError {
-                                    line: currentline,
-                                    column: currentcolumn,
-                                    errtype: ParseEbnfErrorType::UnexpectedCharacter(
-                                        char.to_owned(),
-                                    ),
-                                });
-                            } else if char == '\\' {
-                                escaped = true;
-                            }
-                        }
-                        //parsing brackets
-                        else if bracketparse {
-                            if char == '(' {
-                                bracketlevel += 1;
-                            }
-                            if char == ')' {
-                                bracketlevel -= 1;
-                                if bracketlevel == 0 {
-                                    bracketparse = false;
-                                    parsedrules.push(EbnfStatement::new(
-                                        &s[matchstart + 1..i],
-                                        currentline,
-                                        currentcolumn,
-                                    )?);
-                                    matchstart = i + 1;
-                                }
-                            }
-                        }
-                        //parsing regex
-                        else if regexparse {
-                            if char == '/' {
-                                regexparse = false;
-                                parsedrules.push(EbnfStatement::RegexTerminal {
-                                    string: &s[matchstart + 1..i],
-                                });
-                                matchstart = i + 1;
-                            }
-                        }
-                        //parsing regular rule names, split by space, newline or tab
-                        else if [' ', '\n', '\t'].contains(&char) {
-                            if matchstart != i {
-                                parsedrules.push(EbnfStatement::DefinedRule {
-                                    rulename: &s[matchstart..i],
-                                });
-                            }
-                            matchstart = i + 1;
-                        } else if char == '"' {
-                            stringparse = true;
-                        } else if char == '(' {
-                            bracketparse = true;
-                            bracketlevel = 1;
-                        } else if char == '/' {
-                            regexparse = true;
-                        } else if char == '?' {
-                            if parsedrules.len() == 0 {
-                                return Err(ParseEbnfError {
-                                    line: currentline,
-                                    column: currentcolumn,
-                                    errtype: ParseEbnfErrorType::EmptyRule,
-                                });
-                            }
-                            let lastrule = parsedrules.pop().expect("");
-
-                            parsedrules.push(EbnfStatement::Optional {
-                                rule: Box::new(lastrule),
-                            });
-                            matchstart = i + 1;
-                        } else if char == '*' {
-                            if parsedrules.len() == 0 {
-                                return Err(ParseEbnfError {
-                                    line: currentline,
-                                    column: currentcolumn,
-                                    errtype: ParseEbnfErrorType::EmptyRule,
-                                });
-                            }
-                            let lastrule = parsedrules.pop().expect("");
-
-                            parsedrules.push(EbnfStatement::ZeroOrMore {
-                                rule: Box::new(lastrule),
-                            });
-                            matchstart = i + 1;
-                        } else if char == '+' {
-                            if parsedrules.len() == 0 {
-                                return Err(ParseEbnfError {
-                                    line: currentline,
-                                    column: currentcolumn,
-                                    errtype: ParseEbnfErrorType::EmptyRule,
-                                });
-                            }
-                            let lastrule = parsedrules.pop().expect("");
-
-                            parsedrules.push(EbnfStatement::OneOrMore {
-                                rule: Box::new(lastrule),
-                            });
-                            matchstart = i + 1;
-                        } else if char == '|' {
-                            let left: Box<EbnfStatement> = match parsedrules.len() {
-                                0 => {
-                                    return Err(ParseEbnfError {
-                                        line: currentline,
-                                        column: currentcolumn,
-                                        errtype: ParseEbnfErrorType::EmptyRule,
-                                    });
-                                }
-                                1 => Box::new(parsedrules.pop().expect("")),
-                                _ => {
-                                    let mut concatrules: Vec<Box<EbnfStatement>> = Vec::new();
-                                    while parsedrules.len() > 0 {
-                                        concatrules.push(Box::new(parsedrules.remove(0)));
-                                    }
-                                    Box::new(EbnfStatement::Concatenation { rules: concatrules })
-                                }
-                            };
-                            let right: Box<EbnfStatement> = Box::new(EbnfStatement::new(
-                                &s[i + 1..],
+                //parsing strings
+                if escaped {
+                    escaped = false;
+                } else if stringparse {
+                    if char == '"' {
+                        stringparse = false;
+                        parsedrules.push(EbnfStatement::StringTerminal {
+                            string: &s[matchstart + 1..i],
+                        });
+                        matchstart = i + 1;
+                    } else if char == '\n' {
+                        return Err(ParseEbnfError {
+                            line: currentline,
+                            column: currentcolumn,
+                            errtype: ParseEbnfErrorType::UnexpectedCharacter(char.to_owned()),
+                        });
+                    } else if char == '\\' {
+                        escaped = true;
+                    }
+                }
+                //parsing brackets
+                else if bracketparse {
+                    if char == '(' {
+                        bracketlevel += 1;
+                    }
+                    if char == ')' {
+                        bracketlevel -= 1;
+                        if bracketlevel == 0 {
+                            bracketparse = false;
+                            parsedrules.push(EbnfStatement::new(
+                                &s[matchstart + 1..i],
                                 currentline,
-                                currentcolumn + 1,
+                                currentcolumn,
                             )?);
-                            out = Some(EbnfStatement::Or {
-                                left: left,
-                                right: right,
+                            matchstart = i + 1;
+                        }
+                    }
+                }
+                //parsing regex
+                else if regexparse {
+                    if char == '/' {
+                        regexparse = false;
+                        parsedrules.push(EbnfStatement::RegexTerminal {
+                            string: &s[matchstart + 1..i],
+                        });
+                        matchstart = i + 1;
+                    }
+                }
+                //parsing regular rule names, split by space, newline or tab
+                else if [' ', '\n', '\t'].contains(&char) {
+                    if matchstart != i {
+                        parsedrules.push(EbnfStatement::DefinedRule {
+                            rulename: &s[matchstart..i],
+                        });
+                    }
+                    matchstart = i + 1;
+                } else if char == '"' {
+                    stringparse = true;
+                } else if char == '(' {
+                    bracketparse = true;
+                    bracketlevel = 1;
+                } else if char == '/' {
+                    regexparse = true;
+                } else if char == '?' {
+                    if parsedrules.len() == 0 {
+                        return Err(ParseEbnfError {
+                            line: currentline,
+                            column: currentcolumn,
+                            errtype: ParseEbnfErrorType::EmptyRule,
+                        });
+                    }
+                    let lastrule = parsedrules.pop().expect("");
+
+                    parsedrules.push(EbnfStatement::Optional {
+                        rule: Box::new(lastrule),
+                    });
+                    matchstart = i + 1;
+                } else if char == '*' {
+                    if parsedrules.len() == 0 {
+                        return Err(ParseEbnfError {
+                            line: currentline,
+                            column: currentcolumn,
+                            errtype: ParseEbnfErrorType::EmptyRule,
+                        });
+                    }
+                    let lastrule = parsedrules.pop().expect("");
+
+                    parsedrules.push(EbnfStatement::ZeroOrMore {
+                        rule: Box::new(lastrule),
+                    });
+                    matchstart = i + 1;
+                } else if char == '+' {
+                    if parsedrules.len() == 0 {
+                        return Err(ParseEbnfError {
+                            line: currentline,
+                            column: currentcolumn,
+                            errtype: ParseEbnfErrorType::EmptyRule,
+                        });
+                    }
+                    let lastrule = parsedrules.pop().expect("");
+
+                    parsedrules.push(EbnfStatement::OneOrMore {
+                        rule: Box::new(lastrule),
+                    });
+                    matchstart = i + 1;
+                } else if char == '|' {
+                    let left: Box<EbnfStatement> = match parsedrules.len() {
+                        0 => {
+                            return Err(ParseEbnfError {
+                                line: currentline,
+                                column: currentcolumn,
+                                errtype: ParseEbnfErrorType::EmptyRule,
                             });
-                            outfound = true;
-                        } else if char == ';' {
-                            break;
                         }
-
-                        if char == '\n' {
-                            println!("linebreak");
-                            currentcolumn = 0;
-                            currentline += 1;
+                        1 => Box::new(parsedrules.pop().expect("")),
+                        _ => {
+                            let mut concatrules: Vec<Box<EbnfStatement>> = Vec::new();
+                            while parsedrules.len() > 0 {
+                                concatrules.push(Box::new(parsedrules.remove(0)));
+                            }
+                            Box::new(EbnfStatement::Concatenation { rules: concatrules })
                         }
+                    };
+                    let right: Box<EbnfStatement> = Box::new(EbnfStatement::new(
+                        &s[i + 1..],
+                        currentline,
+                        currentcolumn + 1,
+                    )?);
+                    out = Some(EbnfStatement::Or {
+                        left: left,
+                        right: right,
+                    });
+                    outfound = true;
+                } else if char == ';' {
+                    parsebody = false;
+                }
 
-                        currentcolumn += 1;
+                if char == '\n' {
+                    currentcolumn = 0;
+                    currentline += 1;
+                }
+
+                currentcolumn += 1;
+
+                if parsebody == false {
+                    if matchstart < i {
+                        parsedrules.push(EbnfStatement::DefinedRule {
+                            rulename: &s[matchstart..i],
+                        });
                     }
 
                     if stringparse {
@@ -570,34 +589,49 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
                         });
                     }
                     parsebody = false;
-                    match out {
-                        Some(rule) => Ok(rule),
-                        None => Err(ParseEbnfError {
-                            line: currentline,
-                            column: currentcolumn,
-                            errtype: ParseEbnfErrorType::EmptyRule,
-                        }),
-                    }
-                }?;
-                println!("{rulename}, {parserule}");
-                parsedstatements.push(EbnfRule {
-                    name: rulename,
-                    rule: parserule,
-                });
+                    let parserule = match out {
+                        Some(rule) => rule,
+                        None => {
+                            return Err(ParseEbnfError {
+                                line: currentline,
+                                column: currentcolumn,
+                                errtype: ParseEbnfErrorType::EmptyRule,
+                            });
+                        }
+                    };
+                    out = None;
+                    parsedstatements.push(EbnfRule {
+                        name: rulename,
+                        rule: parserule,
+                    });
+                }
             } else {
                 if char.is_alphanumeric() {
-                    println!("found a rule start at line {currentline}, column {currentcolumn}");
                     matchstart = i;
                     parsename = true;
                 }
                 currentcolumn += 1;
             }
             if char == '\n' {
-                println!("Linebreak");
                 currentline += 1;
                 currentcolumn = 0;
             }
             i += 1;
+        }
+        if parsename {
+            return Err(ParseEbnfError {
+                line: currentline,
+                column: currentcolumn,
+                errtype: ParseEbnfErrorType::EmptyRule,
+            });
+        }
+
+        if parsebody {
+            return Err(ParseEbnfError {
+                line: currentline,
+                column: currentcolumn,
+                errtype: ParseEbnfErrorType::UnclosedRule,
+            });
         }
 
         Ok(EbnfParser {
@@ -613,10 +647,16 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
 fn main() {
     println!();
 
-    let parser = EbnfParser::from_str("test: \"haiiii :3\";\n woof: test ;");
+    let parser = EbnfParser::from_str(
+        "identifier: /[a-zA-Z][0-9a-zA-Z_-]*/; assign: identifier \"=\" expression;",
+    );
 
     match parser {
         Err(err) => println!("{err}"),
-        _ => {}
+        Ok(parser) => {
+            for rule in parser.rules {
+                println!("{}: {}", rule.name, rule.rule)
+            }
+        }
     }
 }
