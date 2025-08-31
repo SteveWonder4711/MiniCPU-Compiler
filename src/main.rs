@@ -1,25 +1,25 @@
 use regex::Regex;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-#[allow(dead_code)]
 struct EbnfRule<'a> {
     name: &'a str,
     rule: EbnfStatement<'a>,
 }
 
-struct EbnfParser<'a, 'b> {
-    input: &'b str,
+struct EbnfParser<'rules, 'partials> {
     currentline: i32,
     currentcolumn: i32,
-    rules: Vec<EbnfRule<'a>>,
+    rules: HashMap<String, EbnfStatement<'rules>>,
     charnum: i64,
+    partialparses: Vec<Box<EbnfPartial<'partials>>>,
 }
 
 struct EbnfPartial<'a> {
     starttoken: i64,
     currenttoken: i64,
-    statement: EbnfStatement<'a>,
+    statement: &'a EbnfStatement<'a>,
     isterminal: bool,
+    currentchar: i64,
 }
 
 enum EbnfStatement<'a> {
@@ -53,6 +53,7 @@ enum EbnfStatement<'a> {
         left: Box<EbnfStatement<'a>>,
         right: Box<EbnfStatement<'a>>,
     },
+    Empty,
 }
 
 struct ParseEbnfError {
@@ -67,6 +68,17 @@ enum ParseEbnfErrorType {
     UnexpectedCharacter(char),
     EmptyRule,
     UnclosedRule,
+}
+
+struct ParseCodeError {
+    line: i32,
+    column: i32,
+    errtype: ParseCodeErrorType,
+}
+
+enum ParseCodeErrorType {
+    InvalidRegex,
+    UnknownRule,
 }
 
 impl fmt::Display for ParseEbnfError {
@@ -112,6 +124,27 @@ impl fmt::Debug for ParseEbnfError {
     }
 }
 
+impl fmt::Display for ParseCodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.errtype {
+            ParseCodeErrorType::InvalidRegex => {
+                write!(
+                    f,
+                    "Invalid Regex at line {}, column {}",
+                    self.line, self.column
+                )
+            }
+            ParseCodeErrorType::UnknownRule => {
+                write!(
+                    f,
+                    "Unknown Rule at line {}, column {}",
+                    self.line, self.column
+                )
+            }
+        }
+    }
+}
+
 impl<'a> fmt::Display for EbnfStatement<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -138,6 +171,7 @@ impl<'a> fmt::Display for EbnfStatement<'a> {
             EbnfStatement::Or { left, right } => write!(f, "{left} | {right}"),
             EbnfStatement::OneOrMore { rule } => write!(f, "{rule}+"),
             EbnfStatement::ZeroOrMore { rule } => write!(f, "{rule}*"),
+            EbnfStatement::Empty => write!(f, "§"),
         }
     }
 }
@@ -364,15 +398,15 @@ impl<'a> EbnfStatement<'a> {
     }
 }
 
-impl<'a, 'b> EbnfParser<'a, 'b> {
-    fn from_str(s: &'a str) -> Result<Self, ParseEbnfError> {
+impl<'parser: 'partials, 'input, 'startrule, 'partials> EbnfParser<'parser, 'partials> {
+    fn from_str(s: &'parser str) -> Result<Self, ParseEbnfError> {
         let mut parsename = false;
         let mut parsebody = false;
         let mut matchstart = 0;
         let mut currentline = 0;
         let mut currentcolumn = 0;
         let mut rulename = "";
-        let mut parsedstatements: Vec<EbnfRule<'a>> = Vec::new();
+        let mut parsedstatements: HashMap<String, EbnfStatement> = HashMap::new();
         let mut i = 0;
 
         let mut parsedrules: Vec<EbnfStatement> = Vec::new();
@@ -600,10 +634,7 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
                         }
                     };
                     out = None;
-                    parsedstatements.push(EbnfRule {
-                        name: rulename,
-                        rule: parserule,
-                    });
+                    parsedstatements.insert(rulename.to_owned(), parserule);
                 }
             } else {
                 if char.is_alphanumeric() {
@@ -635,12 +666,85 @@ impl<'a, 'b> EbnfParser<'a, 'b> {
         }
 
         Ok(EbnfParser {
-            input: "",
             currentline: 0,
             currentcolumn: 0,
             rules: parsedstatements,
             charnum: 0,
+            partialparses: Vec::new(),
         })
+    }
+
+    fn parse(
+        &'parser mut self,
+        input: &'input str,
+        startrule: &'startrule str,
+    ) -> Result<(), ParseCodeError> {
+        let startstatement = self.rules.get(startrule);
+        match startstatement {
+            Some(rule) => {
+                self.partialparses.push(Box::new(EbnfPartial {
+                    currentchar: 0,
+                    starttoken: 0,
+                    currenttoken: 0,
+                    isterminal: false,
+                    statement: rule,
+                }));
+            }
+            None => {
+                return Err(ParseCodeError {
+                    errtype: ParseCodeErrorType::UnknownRule,
+                    line: 0,
+                    column: 0,
+                });
+            }
+        };
+
+        for statement in &mut self.partialparses {
+            statement.trymatch(input);
+            println!("{}", *statement);
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a> EbnfPartial<'a> {
+    fn trymatch(&mut self, s: &str) {
+        let tomatch = &s[self.currentchar as usize..];
+        match self.statement {
+            EbnfStatement::StringTerminal { string } => {
+                println!("matching string");
+                if tomatch.starts_with(string) {
+                    println!("matched {}", string);
+                    self.currenttoken += 1;
+                    self.currentchar += string.len() as i64;
+                }
+            }
+            EbnfStatement::RegexTerminal { string } => {
+                println!("matching regex /{}/", string);
+                let reg = Regex::new(format!("^({})", string).as_str());
+                match reg {
+                    Err(_) => {
+                        println!("invalid Regex");
+                        return;
+                    }
+                    Ok(exp) => {
+                        let matchtoken = exp.captures(tomatch);
+                        match matchtoken {
+                            Some(captures) => {
+                                println!("matched {}", &captures[1]);
+                                self.currenttoken += 1;
+                                self.currentchar += captures[1].len() as i64;
+                            }
+                            None => {
+                                println!("no match")
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -648,15 +752,21 @@ fn main() {
     println!();
 
     let parser = EbnfParser::from_str(
-        "identifier: /[a-zA-Z][0-9a-zA-Z_-]*/; assign: identifier \"=\" expression;",
+        "identifier: /[a-zA-Z][0-9a-zA-Z_-]*/; number: /[0-9]+/; assign: identifier \"=\" number;",
     );
 
+    let code = "123   ";
+
     match parser {
-        Err(err) => println!("{err}"),
-        Ok(parser) => {
-            for rule in parser.rules {
-                println!("{}: {}", rule.name, rule.rule)
+        Err(err) => {
+            println!("{err}");
+            return;
+        }
+        Ok(mut parser) => {
+            for (name, rule) in &parser.rules {
+                println!("{}: {}", name, rule)
             }
+            parser.parse(code, "number");
         }
     }
 }
